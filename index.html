@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bezier Path Web Component</title>
+    <style>
+        body {
+            font:18px arial;
+        }
+        bezier-path {
+            display: block;
+            width: 100%;
+            height: 300px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>&lt;bezier-path></h1>
+    <ul>
+        <li>Press <b>c</b> to toggle between adding curve and fixed points</li>
+        <li>Click on the SVG to add a new point</li>
+        <li>Ctrl+Click a point to delete it (minimum 3 points required)</li>
+    </ul>
+
+    <bezier-path></bezier-path>
+
+    <script>
+        // ==================================================================== Helper functions
+        function createElement(tag, props = {}, el = document.createElement(tag)) {
+            return Object.assign(el, props);
+        }
+        function createElementNS(tag, attrs, props = {}) {
+            const el = document.createElementNS("http://www.w3.org/2000/svg", tag); // create SVG element
+            for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value); // set Attributes
+            return Object.assign(el, props); // assign properties
+        }
+        // ==================================================================== <bezier-path>
+        customElements.define('bezier-path', class extends HTMLElement {
+            constructor() {
+                super()
+                    .attachShadow({ mode: 'open' })
+                    .append(
+                        createElement('style', {
+                            textContent:
+                                `svg{width:100%;height:100%;border:2px solid #ccc}` +
+                                `circle{cursor:pointer}` +
+                                `.fixed{fill:green}` +
+                                `.curve{fill:red}` +
+                                `path{stroke:blue;stroke-width:2;fill:none}` +
+                                `polyline{stroke:rgba(0,0,0,0.5);stroke-dasharray:5,5;stroke-width:2;fill:none}`
+                        }),
+                        // ------------------------------------------------------------ create <svg>
+                        this.svg = createElementNS("svg", { viewBox: "0 0 400 200" }, {
+                            innerHTML: `<polyline/><path/>`,
+                            onclick: (evt) => this.newPoint(evt),
+                            onmousemove: (evt) => this.event_dragPoint(evt),
+                            onmouseleave: (evt) => this.event_endDrag(evt),
+                            onmouseup: (evt) => this.event_endDrag(evt),
+                        })
+                    );
+                // ------------------------------------------------------------ all properties
+                this.draggingcircle = null;
+                this.isAddingCurve = true;
+                // ------------------------------------------------------------ press c key
+                document.addEventListener("keydown", (evt) => {
+                    if (evt.key === 'c') { //if c is pressed, change state
+                        this.isAddingCurve = !this.isAddingCurve;
+                        console.log('Adding curve:', this.isAddingCurve); //for debug
+                    }
+                });
+                // ------------------------------------------------------------ initial points
+                [
+                    { x: 30, y: 170, type: 'fixed' },
+                    { x: 70, y: 30, type: 'curve' },
+                    { x: 170, y: 30, type: 'fixed' },
+                ].forEach((...args) => this.addPoint(...args));
+                // ------------------------------------------------------------
+                this.render();
+            }
+            // ================================================================ get .points
+            // return all <circle> as the this.points Array, no need for an extra Array to keep state, the DOM is the truth
+            get points() {
+                return Array.from(this.svg.querySelectorAll('circle')).map(circle => ({
+                    x: parseFloat(circle.getAttribute('cx')),
+                    y: parseFloat(circle.getAttribute('cy')),
+                    type: circle.classList.contains('curve') ? 'curve' : 'fixed',
+                }));
+            }
+            // ================================================================ addPoint
+            addPoint({
+                x,
+                y,
+                r = 5, // radius
+                type = this.isAddingCurve ? 'curve' : 'fixed'
+            }) {
+                const circle = createElementNS("circle", {
+                    cx: x, cy: y, r,
+                    class: type,
+                }, {
+                    onmousedown: (evt) => {
+                        this.draggingcircle = circle;
+                        evt.stopPropagation(); // Prevent click event on svg.
+                    },
+                    onmouseup: (evt) => {
+                        if (evt.ctrlKey && this.points.length > 3) {
+                            circle.remove();
+                            this.render();
+                        }
+                    }
+                });
+                return this.svg.appendChild(circle); // add circle AND return reference
+            }
+            // ==================================================================== newPoint
+            newPoint(evt) {
+                if (evt.target !== this.svg) return; // Check if the click target is the svg, if not, do nothing.
+                const { x, y } = this.getMousePosition(evt); // Get the point, account for the svg offset and scaling
+                this.addPoint({ x, y })
+                this.render();
+            }
+            // ==================================================================== getMousePosition
+            getMousePosition(evt) {
+                let x, y, CTM;
+                // Get the transform matrix of the SVG, convert coordinates to page coordinates
+                if (CTM = this.svg.getScreenCTM()) {
+                    x = (evt.clientX - CTM.e) / CTM.a;
+                    y = (evt.clientY - CTM.f) / CTM.d;
+                } else {
+                    const { left, top } = this.svg.getBoundingClientRect();
+                    x = evt.clientX - left;
+                    y = evt.clientY - top;
+                }
+                return { x, y };
+            }
+            // ==================================================================== Events
+            event_endDrag() {
+                this.draggingcircle = null;
+            }
+            event_dragPoint(evt) {
+                if (this.draggingcircle) {
+                    const { x, y } = this.getMousePosition(evt);
+                    this.draggingcircle.setAttribute('cx', x); // Update the position of the dragged point.
+                    this.draggingcircle.setAttribute('cy', y);
+                    this.render();
+                }
+            }
+            // ==================================================================== updatePath
+            render(pathD = "") {
+                let points = this.points; // getter creates Array
+                if (points.length > 1) {
+                    pathD = `M ${points[0].x} ${points[0].y}`; // create D path starting x,y
+                    let idx = 1;
+                    while (idx < points.length) {
+                        const { x, y, type } = points[idx];
+                        if (type == 'fixed') {
+                            pathD += `L${x} ${y}`;
+                            idx++;
+                        } else if (type === 'curve') {
+                            const nextFixedPoint = points.slice(idx + 1).find(p => p.type == 'fixed');
+                            const { x: x1, y: y1 } = points[idx - 1];
+                            if (nextFixedPoint) {
+                                const { x: x2, y: y2 } = nextFixedPoint;
+                                this.svg.querySelector("polyline").setAttribute("points", `${x1},${y1} ${x},${y} ${x2},${y2}`);
+                                pathD += `Q${x} ${y},${x2} ${y2}`;
+                                idx = points.indexOf(nextFixedPoint);
+                            } else {
+                                pathD += `L${x} ${y}`;
+                                idx++; // skip next point, part of curve?
+                            }
+                        }
+                    }
+                }
+                this.svg.querySelector("path").setAttribute('d', pathD);
+            }
+        });
+    </script>
+</body>
+
+</html>
